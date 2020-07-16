@@ -1,0 +1,8 @@
+# CloudFormation template
+# VPCの作成
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  FirstVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 20.0.0.0/16
