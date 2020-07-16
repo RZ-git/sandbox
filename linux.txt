@@ -1,0 +1,58 @@
+## 起動テンプレートからEC2インスタンスを2台起動
+
+## NATゲートウェイを作成
+WEBサーバーのあるパブリックサブネットを選択
+メインルートテーブルのデフォルトゲートウェイをNATに向ける
+
+## WEBサーバーの初期設定 (テンプレートのユーザーデータに記述している場合は不要)
+# UPDATE
+sudo yum -y update
+
+# Apacheインストール
+sudo yum -y install httpd
+
+# サービス起動
+sudo service httpd start
+
+# 自動起動
+sudo systemctl enable httpd
+
+# 構成の確認
+systemctl list-unit-files
+
+# プロセス確認
+ps -ax | grep httpd
+
+## WEBサーバー（踏み台）からDBサーバーにSSH接続
+# Tera term のSSH SCPを使って秘密鍵をサーバーのホームディレクトリに置く
+From:にec2-test-keypair.pemのパスを、Toに~/を入力しsend。
+
+# 秘密鍵ファイルのパーミッションを自分しか読めないようにする
+chmod 400 ec2-test-keypair.pem
+
+# DBサーバーのプライベートIPをコピーしてWEBサーバーからSSH接続
+ssh -i ec2-test-keypair.pem ec2-user@10.0.3.10
+
+## DBサーバーの初期設定
+# MariaDBの削除
+sudo yum -y remove mariadb-libs
+sudo rm -rf /var/lib/mysql
+
+# MySQL公式サイトからリポジトリ取得 https://dev.mysql.com/downloads/repo/yum/
+sudo rpm -ivh https://dev.mysql.com/get/mysql80-community-release-el8-1.noarch.rpm
+
+# インストール
+sudo yum install mysql-community-server
+
+# 起動
+sudo service mysqld start
+
+# バージョン確認
+sudo mysqld --version
+
+
+
+# DB rootユーザー設定
+mysqladmin -u root password
+New password: *****
+Confirm new password: *****

@@ -8,6 +8,6 @@ class Category(Enum):
 
 class DevelopmentLanguage(Enum):
     """ 開発言語 """
-    python = 1
-    typescript = 2
-    c_sharp = 3
+    PYTHON = 1
+    TYPESCRIPT = 2
+    C_SHARP = 3
