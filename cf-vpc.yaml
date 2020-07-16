@@ -1,8 +1,644 @@
 # CloudFormation template
-# VPCの作成
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS CloudFormation Sample Template WordPress_Multi_AZ: WordPress is web
+  software you can use to create a beautiful website or blog. This template
+  installs a highly-available, scalable WordPress deployment using a multi-az
+  Amazon RDS database instance for storage. It demonstrates using the AWS
+  CloudFormation bootstrap scripts to deploy WordPress. **WARNING** This
+  template creates an Amazon EC2 instance, an Application Load Balancer and an
+  Amazon RDS database instance. You will be billed for the AWS resources used if
+  you create a stack from this template.
+Parameters:
+  VpcId:
+    Type: 'AWS::EC2::VPC::Id'
+    Description: VpcId of your existing Virtual Private Cloud (VPC)
+    ConstraintDescription: must be the VPC Id of an existing Virtual Private Cloud.
+  Subnets:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: The list of SubnetIds in your Virtual Private Cloud (VPC)
+    ConstraintDescription: >-
+      must be a list of at least two existing subnets associated with at least
+      two different availability zones. They should be residing in the selected
+      Virtual Private Cloud.
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t2.micro
+      - t2.small
+    ConstraintDescription: must be a valid EC2 instance type.
+  AccessAllowIP:
+    Description: The IP address range that can be used to SSH and HTTP to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  DBClass:
+    Description: Database instance class
+    Type: String
+    Default: db.t2.small
+    AllowedValues:
+      - db.t2.micro
+      - db.t2.small
+    ConstraintDescription: must select a valid database instance type.
+  S3BucketName:
+    Description: The S3 bucket name. used as WordPress wp-content/uploads directory.
+    Type: String
+    MinLength: '3'
+    MaxLength: '255'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: 'input S3 unique bucket name. min:3, maxlength:255'
+  DBName:
+    Default: wordpressdb
+    Description: The WordPress database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBUser:
+    NoEcho: 'true'
+    Description: The WordPress database admin account username
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    NoEcho: 'true'
+    Description: The WordPress database admin account password
+    Type: String
+    MinLength: '8'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: must contain only alphanumeric characters.
+  MultiAZDatabase:
+    Default: 'false'
+    Description: Create a Multi-AZ MySQL Amazon RDS database instance
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    ConstraintDescription: must be either true or false.
+  WebServerCapacity:
+    Default: '1'
+    Description: The initial number of WebServer instances
+    Type: Number
+    MinValue: '1'
+    MaxValue: '5'
+    ConstraintDescription: must be between 1 and 5 EC2 instances.
+  DBAllocatedStorage:
+    Default: '5'
+    Description: The size of the database (Gb)
+    Type: Number
+    MinValue: '5'
+    MaxValue: '1024'
+    ConstraintDescription: must be between 5 and 1024Gb.
+  WordPressInstallDirectoryName:
+    Description: >-
+      enter WordPress install directory name. If not entered, it will be
+      installed directly under /var/www/html
+    Type: String
+    Default: wordpress
+Conditions:
+  WordPressInstallDirectoryNameIsEmpty: !Equals
+    - !Ref WordPressInstallDirectoryName
+    - ''
+  WordPressInstallDirectoryNameIsDefault: !Equals
+    - !Ref WordPressInstallDirectoryName
+    - wordpress
+Mappings:
+  AWSInstanceType2Arch:
+    t2.micro:
+      Arch: HVM64
+    t2.small:
+      Arch: HVM64
+  AWSInstanceType2NATArch:
+    t2.micro:
+      Arch: NATHVM64
+    t2.small:
+      Arch: NATHVM64
+  AWSRegionArch2AMI:
+    ap-northeast-1:
+      HVM64: ami-00a5245b4816c38e6
+      HVMG2: ami-09d0e0e099ecabba2
 Resources:
-  FirstVPC:
-    Type: AWS::EC2::VPC
+  ApplicationLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
     Properties:
-      CidrBlock: 20.0.0.0/16
+      Subnets: !Ref Subnets
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+  ALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: SecurityGroup created by CloudFormation
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref AccessAllowIP
+      VpcId: !Ref VpcId
+  ALBListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+  ALBTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckPath: !Join
+        - ''
+        - - !If
+            - WordPressInstallDirectoryNameIsEmpty
+            - ''
+            - !Join
+              - ''
+              - - /
+                - !Ref WordPressInstallDirectoryName
+          - /wp-admin/install.php
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VpcId
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: 'true'
+        - Key: stickiness.type
+          Value: lb_cookie
+        - Key: stickiness.lb_cookie.duration_seconds
+          Value: '86400'
+  WebServerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: SecurityGroup created by CloudFormation
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Select
+            - 0
+            - !GetAtt
+              - ApplicationLoadBalancer
+              - SecurityGroups
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref AccessAllowIP
+      VpcId: !Ref VpcId
+  WebServerGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier: !Ref Subnets
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity: !Ref WebServerCapacity
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT20M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+        PauseTime: PT20M
+        WaitOnResourceSignals: 'true'
+  LaunchConfig:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+          wordpress_install:
+            - install_cfn
+            - init_jp_setting
+            - install_wordpress
+        install_cfn:
+          files:
+            /etc/cfn/cfn-hup.conf:
+              content: !Join
+                - ''
+                - - |
+                    [main]
+                  - stack=
+                  - !Ref 'AWS::StackId'
+                  - |+
+
+                  - region=
+                  - !Ref 'AWS::Region'
+                  - |+
+
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Join
+                - ''
+                - - |
+                    [cfn-auto-reloader-hook]
+                  - |
+                    triggers=post.update
+                  - >
+                    path=Resources.LaunchConfig.Metadata.AWS::CloudFormation::Init
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - '         --stack '
+                  - !Ref 'AWS::StackName'
+                  - '         --resource LaunchConfig '
+                  - '         --configsets wordpress_install '
+                  - '         --region '
+                  - !Ref 'AWS::Region'
+                  - |+
+
+              mode: '000400'
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        init_jp_setting:
+          files:
+            /tmp/jp-setting:
+              content: !Join
+                - ''
+                - - |
+                    #!/bin/bash -xe
+                  - >
+                    sed -i "s/ZONE=\"UTC\"/ZONE=\"Asia\/Tokyo\"/"
+                    /etc/sysconfig/clock
+                  - |
+                    /bin/cp -f /usr/share/zoneinfo/Japan /etc/localtime
+                  - |
+                    sed -i "s/en_US\.UTF-8/ja_JP\.UTF-8/" /etc/sysconfig/i18n
+              mode: '000500'
+              owner: root
+              group: root
+          commands:
+            01_execute_init_jp_setting:
+              command: /tmp/jp-setting
+              cwd: '~'
+        install_wordpress:
+          packages:
+            yum:
+              php73: []
+              php73-mbstring: []
+              php73-mysqlnd: []
+              php73-gd: []
+              mysql57: []
+              mysql57-libs: []
+              httpd24: []
+          sources:
+            /var/www/html: 'https://ja.wordpress.org/latest-ja.tar.gz'
+          files:
+            /tmp/create-wp-config:
+              content: !Join
+                - ''
+                - - |
+                    #!/bin/bash
+                  - |
+                    cd /var/www/html
+                  - |+
+
+                  - |
+                    # wordpress move
+                  - !If
+                    - WordPressInstallDirectoryNameIsEmpty
+                    - !Join
+                      - ''
+                      - - |
+                          mv wordpress/* ./
+                        - |
+                          rm -fR wordpress/
+                    - !Join
+                      - ''
+                      - - !If
+                          - WordPressInstallDirectoryNameIsDefault
+                          - ''
+                          - !Join
+                            - ''
+                            - - 'mv wordpress '
+                              - !Ref WordPressInstallDirectoryName
+                              - |+
+
+                        - 'cd '
+                        - !Ref WordPressInstallDirectoryName
+                        - |+
+
+                  - |+
+
+                  - |
+                    # create wp-config.php
+                  - |
+                    cp wp-config-sample.php wp-config.php
+                  - sed -i "s/'database_name_here'/'
+                  - !Ref DBName
+                  - |
+                    '/g" wp-config.php
+                  - sed -i "s/'username_here'/'
+                  - !Ref DBUser
+                  - |
+                    '/g" wp-config.php
+                  - sed -i "s/'password_here'/'
+                  - !Ref DBPassword
+                  - |
+                    '/g" wp-config.php
+                  - sed -i "s/'localhost'/'
+                  - !GetAtt
+                    - DBInstance
+                    - Endpoint.Address
+                  - |
+                    '/g" wp-config.php
+                  - |+
+
+                  - |
+                    # salt change
+                  - >
+                    SALTS=$(curl -s
+                    https://api.wordpress.org/secret-key/1.1/salt/)
+                  - |
+                    while read -r SALT; do
+                  - |
+                    SEARCH="define('$(echo "$SALT" | cut -d "'" -f 2)"
+                  - |
+                    REPLACE=$(echo "$SALT" | cut -d "'" -f 4)
+                  - >
+                    sed -i "/^$SEARCH/s/put your unique phrase here/$(echo
+                    $REPLACE | sed -e 's/\\/\\\\/g' -e 's/\//\\\//g' -e
+                    's/&/\\\&/g')/" wp-config.php
+                  - |
+                    done <<< "$SALTS"
+                  - |+
+
+                  - |
+                    # apache setting
+                  - |
+                    chown -R apache: .
+                  - |+
+
+                  - |+
+
+                  - |+
+
+                  - |
+                    # aws configure
+                  - 'aws configure set aws_access_key_id '
+                  - !Ref S3BucketUserAccessKey
+                  - |+
+
+                  - 'aws configure set aws_secret_access_key '
+                  - !GetAtt
+                    - S3BucketUserAccessKey
+                    - SecretAccessKey
+                  - |+
+
+                  - |
+                    aws configure set region ap-northeast-1
+                  - |
+                    aws configure set output json
+                  - |+
+
+                  - |
+                    # install golang and goofys
+                  - |
+                    yum -y install golang fuse
+                  - >
+                    wget
+                    https://github.com/kahing/goofys/releases/download/v0.22.0/goofys
+                    -P /usr/local/bin
+                  - |
+                    chmod +x /usr/local/bin/goofys
+                  - |+
+
+                  - |
+                    # create s3 mount dir
+                  - mkdir -p /var/www/html/
+                  - !If
+                    - WordPressInstallDirectoryNameIsEmpty
+                    - ''
+                    - !Join
+                      - ''
+                      - - !Ref WordPressInstallDirectoryName
+                        - /
+                  - |
+                    wp-content/uploads
+                  - |+
+
+                  - |
+                    # execute s3 mount by goofys. (48 = apache uid)
+                  - |
+                    export HOME=/root
+                  - >-
+                    /usr/local/bin/goofys -o nonempty -o allow_other --uid=48
+                    --gid=48 --dir-mode=0777 --file-mode=0777
+                    --region=ap-northeast-1
+                  - !Ref S3BucketName
+                  - ' /var/www/html/'
+                  - !If
+                    - WordPressInstallDirectoryNameIsEmpty
+                    - ''
+                    - !Join
+                      - ''
+                      - - !Ref WordPressInstallDirectoryName
+                        - /
+                  - |
+                    wp-content/uploads
+              mode: '000500'
+              owner: root
+              group: root
+          commands:
+            01_configure_wordpress:
+              command: /tmp/create-wp-config
+              cwd: '~'
+          services:
+            sysvinit:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+    Properties:
+      ImageId: !FindInMap
+        - AWSRegionArch2AMI
+        - !Ref 'AWS::Region'
+        - !FindInMap
+          - AWSInstanceType2Arch
+          - !Ref InstanceType
+          - Arch
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref WebServerSecurityGroup
+      KeyName: !Ref KeyName
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              yum update -y aws-cfn-bootstrap
+            - '/opt/aws/bin/cfn-init -v '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource LaunchConfig '
+            - '         --configsets wordpress_install '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+            - '/opt/aws/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource WebServerGroup '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+  DBEC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Open database for access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '3306'
+          ToPort: '3306'
+          SourceSecurityGroupId: !Ref WebServerSecurityGroup
+      VpcId: !Ref VpcId
+  DBInstance:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBName: !Ref DBName
+      Engine: MySQL
+      EngineVersion: 5.7.26
+      MultiAZ: !Ref MultiAZDatabase
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: !Ref DBClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      VPCSecurityGroups:
+        - !GetAtt
+          - DBEC2SecurityGroup
+          - GroupId
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref S3BucketName
+      AccessControl: Private
+  S3BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          Effect: Allow
+          Action:
+            - 's3:PutObject'
+            - 's3:GetObject'
+            - 's3:DeleteObject'
+            - 's3:ListBucket'
+          Resource:
+            - !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref S3BucketName
+                - /*
+            - !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref S3BucketName
+          Principal:
+            AWS: !GetAtt
+              - S3BucketUser
+              - Arn
+  S3BucketUser:
+    Type: 'AWS::IAM::User'
+    Properties:
+      Path: /
+      Policies:
+        - PolicyName: !Join
+            - ''
+            - - !Ref S3BucketName
+              - User
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource: !Join
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - !Ref S3BucketName
+                    - /*
+              - Effect: Allow
+                Action:
+                  - 's3:ListBucket'
+                  - 's3:ListBucketMultipartUploads'
+                Resource: !Join
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - !Ref S3BucketName
+  S3BucketUserAccessKey:
+    Type: 'AWS::IAM::AccessKey'
+    Properties:
+      UserName: !Ref S3BucketUser
+Outputs:
+  WebsiteURL:
+    Value: !Join
+      - ''
+      - - 'http://'
+        - !GetAtt
+          - ApplicationLoadBalancer
+          - DNSName
+        - /
+        - !Ref WordPressInstallDirectoryName
+    Description: WordPress Website
+  DBUser:
+    Value: !Ref DBUser
+  DBPassword:
+    Value: !Ref DBPassword
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: EC2 Setting
+        Parameters:
+          - InstanceType
+          - VpcId
+          - Subnets
+          - WebServerCapacity
+          - WordPressInstallDirectoryName
+      - Label:
+          default: S3 Setting
+        Parameters:
+          - S3BucketName
+      - Label:
+          default: RDS Setting
+        Parameters:
+          - DBClass
+          - DBAllocatedStorage
+          - MultiAZDatabase
+          - DBName
+          - DBUser
+          - DBPassword
+      - Label:
+          default: Other Setting
+        Parameters:
+          - AccessAllowIP
+          - KeyName
