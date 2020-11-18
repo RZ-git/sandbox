@@ -1,0 +1,2 @@
+boto3>=1.16.20
+beautifulsoup4>=4.9.3
