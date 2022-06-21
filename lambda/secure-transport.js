@@ -1,4 +1,5 @@
 // Lambda@Edgeを使った「HTTPセキュリティヘッダー」の付与
+// 削除時はCloudFrontのディストリビューション > ビヘイビアから編集
 exports.handler = async (event, context) => {
     const response = event.Records[0].cf.response;
     const headers = response.headers;
